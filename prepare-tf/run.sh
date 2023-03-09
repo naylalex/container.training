@@ -3,11 +3,25 @@ set -e
 
 TIME=$(which time)
 
-PROVIDER=$1
-[ "$PROVIDER" ] || {
-  echo "Please specify a provider as first argument, or 'ALL' for parallel mode."
+[ "$1" ] || {
+  echo "Syntax:"
+  echo ""
+  echo "$0 <provider> <region> [how-many-clusters] [min-nodes] [max-nodes]"
+  echo ""
   echo "Available providers:"
   ls -1 source/modules
+  echo ""
+  echo "Leave the region empty to show available regions for this provider."
+  echo "You can also specify ALL as a provider to simultaneously provision"
+  echo "many clusters on *each* provider for benchmarking purposes."
+  echo ""
+  exit 1
+}
+
+PROVIDER="$1"
+
+[ "$2" ] || {
+  "./source/modules/$PROVIDER/list_locations.sh"
   exit 1
 }
 
@@ -36,12 +50,15 @@ PROVIDER=$1
   exit 1  
 }
 
-export LINODE_TOKEN=$(grep ^token ~/.config/linode-cli | cut -d= -f2 | tr -d " ")
-export DIGITALOCEAN_ACCESS_TOKEN=$(grep ^access-token ~/.config/doctl/config.yaml | cut -d: -f2 | tr -d " ")
-
 cp -a source $TAG
 cd $TAG
 cp -r modules/$PROVIDER modules/PROVIDER
+cat >terraform.tfvars <<EOF
+location = "$2"
+how_many_clusters = ${3-1}
+min_nodes_per_pool = ${4-2}
+max_nodes_per_pool = ${5-4}
+EOF
 $TIME -o time.1.init terraform init
 $TIME -o time.2.stage1 terraform apply -auto-approve
 cd stage2

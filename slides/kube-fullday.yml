@@ -42,8 +42,9 @@ content:
   - shared/declarative.md
   - k8s/declarative.md
   - k8s/deploymentslideshow.md
-  - k8s/kubenet.md
   - k8s/kubectlexpose.md
+  - k8s/service-types.md
+  - k8s/kubenet.md
   - k8s/shippingimages.md
   #- k8s/buildshiprun-selfhosted.md
   - k8s/buildshiprun-dockerhub.md
@@ -74,6 +75,7 @@ content:
   #- k8s/scalingdockercoins.md
   #- shared/hastyconclusions.md
   #- k8s/daemonset.md
+  #- shared/yaml.md
   #- k8s/authoring-yaml.md
   #- k8s/exercise-yaml.md
   #- k8s/localkubeconfig.md

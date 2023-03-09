@@ -18,15 +18,37 @@
 
 ---
 
+### CoLiMa
+
+- Container runtimes for LiMa
+
+  (LiMa = Linux on macOS)
+
+- For macOS only (Intel and ARM architectures)
+
+- CLI-driven (no GUI like Docker/Rancher Desktop)
+
+- Supports containerd, Docker, Kubernetes
+
+- Installable with brew, nix, or ports
+
+- More info: https://github.com/abiosoft/colima
+
+---
+
 ## Docker Desktop
 
-- Available on Mac and Windows
+- Available on Linux, Mac, and Windows
+
+- Free for personal use and small businesses
+
+  (less than 250 employees and less than $10 millions in annual revenue)
 
 - Gives you one cluster with one node
 
-- Very easy to use if you are already using Docker Desktop:
+- Streamlined installation and user experience
 
-  go to Docker Desktop preferences and enable Kubernetes
+- Great integration with various network stacks and e.g. corporate VPNs
 
 - Ideal for Docker users who need good integration between both platforms
 
@@ -40,13 +62,11 @@
 
 - Runs Kubernetes nodes in Docker containers
 
-- Can deploy multiple clusters, with multiple nodes, and multiple master nodes
+- Can deploy multiple clusters, with multiple nodes
 
-- As of June 2020, two versions co-exist: stable (1.7) and beta (3.0)
+- Runs the control plane on Kubernetes nodes
 
-- They have different syntax and options, this can be confusing
-
-  (but don't let that stop you!)
+- Control plane can also run on multiple nodes
 
 ---
 
@@ -77,6 +97,8 @@
 
 - Requires Docker (obviously!)
 
+- Should also work with Podman and Rootless Docker
+
 - Deploying a single node cluster using the latest version is simple:
   ```bash
   kind create cluster
@@ -84,9 +106,23 @@
 
 - More advanced scenarios require writing a short [config file](https://kind.sigs.k8s.io/docs/user/quick-start#configuring-your-kind-cluster)
 
-  (to define multiple nodes, multiple master nodes, set Kubernetes versions ...)
+  (to define multiple nodes, multiple control plane nodes, set Kubernetes versions ...)
  
 - Can deploy multiple clusters
+
+---
+
+## [MicroK8s](https://microk8s.io/)
+
+- Available on Linux, and since recently, on Mac and Windows as well
+
+- The Linux version is installed through Snap
+
+  (which is pre-installed on all recent versions of Ubuntu)
+
+- Also supports clustering (as in, multiple machines running MicroK8s)
+
+- DNS is not enabled by default; enable it with `microk8s enable dns`
 
 ---
 
@@ -108,23 +144,11 @@
 
 ---
 
-## [MicroK8s](https://microk8s.io/)
-
-- Available on Linux, and since recently, on Mac and Windows as well
-
-- The Linux version is installed through Snap
-
-  (which is pre-installed on all recent versions of Ubuntu)
-
-- Also supports clustering (as in, multiple machines running MicroK8s)
-
-- DNS is not enabled by default; enable it with `microk8s enable dns`
-
----
-
 ## [Rancher Desktop](https://rancherdesktop.io/)
 
-- Available on Mac and Windows
+- Available on Linux, Mac, and Windows
+
+- Free and open-source
 
 - Runs a single cluster with a single node
 
@@ -134,7 +158,7 @@
 
 - Emphasis on ease of use (like Docker Desktop)
 
-- Very young product (first release in May 2021)
+- Relatively young product (first release in May 2021)
 
 - Based on k3s and other proven components
 

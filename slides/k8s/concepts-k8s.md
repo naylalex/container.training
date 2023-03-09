@@ -79,6 +79,20 @@
 
   (blue/green deployment, canary deployment)
 
+--
+
+.footnote[
+On the next page: canary cage with an oxygen bottle, designed to keep the canary alive.
+<br/>
+(See https://post.lurk.org/@zilog/109632335293371919 for details.)
+]
+
+---
+
+class: pic
+
+![Canary cage](images/canary-cage.jpg)
+
 ---
 
 ## More things that Kubernetes can do for us
@@ -287,7 +301,9 @@ No!
 
 --
 
-- By default, Kubernetes uses the Docker Engine to run containers
+- The Docker Engine used to be the default option to run containers with Kubernetes
+
+- Support for Docker (specifically: dockershim) was removed in Kubernetes 1.24
 
 - We can leverage other pluggable runtimes through the *Container Runtime Interface*
 
@@ -329,13 +345,11 @@ Yes!
 
 - We can do these things without Docker
   <br/>
-  (and get diagnosed with NIH¹ syndrome)
+  (but with some languages/frameworks, it might be much harder)
 
 - Docker is still the most stable container engine today
   <br/>
   (but other options are maturing very quickly)
-
-.footnote[¹[Not Invented Here](https://en.wikipedia.org/wiki/Not_invented_here)]
 
 ---
 
@@ -343,17 +357,13 @@ class: extra-details
 
 ## Do we need to run Docker at all?
 
+- On our Kubernetes clusters:
+
+  *Not anymore*
+
 - On our development environments, CI pipelines ... :
 
   *Yes, almost certainly*
-
-- On our production servers:
-
-  *Yes (today)*
-
-  *Probably not (in the future)*
-
-.footnote[More information about CRI [on the Kubernetes blog](https://kubernetes.io/blog/2016/12/container-runtime-interface-cri-in-kubernetes)]
 
 ---
 

@@ -67,6 +67,8 @@ _cmd_createuser() {
     set -e
     # Create the user if it doesn't exist yet.
     id $USER_LOGIN || sudo useradd -d /home/$USER_LOGIN -g users -m -s /bin/bash $USER_LOGIN
+    # Make sure there are at least exec permission on their home.
+    sudo chmod a+X /home/$USER_LOGIN
     # Add them to the docker group, if there is one.
     grep ^docker: /etc/group && sudo usermod -aG docker $USER_LOGIN
     # Set their password.
@@ -96,6 +98,14 @@ _cmd_createuser() {
     fi
     "
 
+    # FIXME this is a gross hack to add the deployment key to our SSH agent,
+    # so that it can be used to bounce from host to host (which is necessary
+    # in the next deployment step). In the long run, we probably want to
+    # generate these keys locally and push them to the machines instead
+    # (once we move everything to Terraform).
+    if [ -f "tags/$TAG/id_rsa" ]; then
+        ssh-add tags/$TAG/id_rsa
+    fi
     pssh "
     set -e
     cd /home/$USER_LOGIN
@@ -105,6 +115,9 @@ _cmd_createuser() {
       sudo -u $USER_LOGIN tar -xf-
     fi
     "
+    if [ -f "tags/$TAG/id_rsa" ]; then
+        ssh-add -d tags/$TAG/id_rsa
+    fi
 
     # FIXME do this only once.
     pssh -I "sudo -u $USER_LOGIN tee -a /home/$USER_LOGIN/.bashrc" <<"SQRL"
@@ -131,6 +144,8 @@ set nowrap
 SQRL
 
     pssh -I "sudo -u $USER_LOGIN tee /home/$USER_LOGIN/.tmux.conf" <<SQRL
+set -g status-style bg=yellow,bold
+
 bind h select-pane -L
 bind j select-pane -D
 bind k select-pane -U
@@ -152,31 +167,28 @@ SQRL
     echo user_ok > tags/$TAG/status
 }
 
-_cmd clusterize "Group VMs in clusters"
-_cmd_clusterize() {
+_cmd standardize "Deal with non-standard Ubuntu cloud images"
+_cmd_standardize() {
     TAG=$1
     need_tag
+
+    # Disable unattended upgrades so that they don't mess up with the subsequent steps
+    pssh sudo rm -f /etc/apt/apt.conf.d/50unattended-upgrades
+
+    # Digital Ocean's cloud init disables password authentication; re-enable it.
+    pssh "
+    if [ -f /etc/ssh/sshd_config.d/50-cloud-init.conf ]; then
+        sudo rm /etc/ssh/sshd_config.d/50-cloud-init.conf
+        sudo systemctl restart ssh.service
+    fi"
 
     # Special case for scaleway since it doesn't come with sudo
     if [ "$INFRACLASS" = "scaleway" ]; then
         pssh -l root "
-    grep DEBIAN_FRONTEND /etc/environment || echo DEBIAN_FRONTEND=noninteractive >> /etc/environment
-    grep cloud-init /etc/sudoers && rm /etc/sudoers
-    apt-get update && apt-get install sudo -y"
+        grep DEBIAN_FRONTEND /etc/environment || echo DEBIAN_FRONTEND=noninteractive >> /etc/environment
+        grep cloud-init /etc/sudoers && rm /etc/sudoers
+        apt-get update && apt-get install sudo -y"
     fi
-
-    # FIXME
-    # Special case for hetzner since it doesn't have an ubuntu user
-    #if [ "$INFRACLASS" = "hetzner" ]; then
-    #    pssh -l root "
-    #[ -d /home/ubuntu ] ||
-    #    useradd ubuntu -m -s /bin/bash
-    #echo 'ubuntu ALL=(ALL:ALL) NOPASSWD:ALL' > /etc/sudoers.d/ubuntu
-    #[ -d /home/ubuntu/.ssh ] ||
-    #    install --owner=ubuntu --mode=700 --directory /home/ubuntu/.ssh
-    #[ -f /home/ubuntu/.ssh/authorized_keys ] ||
-    #    install --owner=ubuntu --mode=600 /root/.ssh/authorized_keys --target-directory /home/ubuntu/.ssh"
-    #fi
 
     # Special case for oracle since their iptables blocks everything but SSH
     pssh "
@@ -198,18 +210,18 @@ _cmd_clusterize() {
         sudo snap remove oracle-cloud-agent
         sudo dpkg --remove --force-remove-reinstreq unified-monitoring-agent
     fi"
+}
+
+_cmd clusterize "Group VMs in clusters"
+_cmd_clusterize() {
+    TAG=$1
+    need_tag
 
     # Copy settings and install Python YAML parser
     pssh -I tee /tmp/settings.yaml <tags/$TAG/settings.yaml
     pssh "
     sudo apt-get update &&
-    sudo apt-get install -y python-yaml"
-
-    # If there is no "python" binary, symlink to python3
-    pssh "
-    if ! which python; then
-        sudo ln -s $(which python3) /usr/local/bin/python
-    fi"
+    sudo apt-get install -y python3-yaml python-is-python3"
 
     # Copy postprep.py to the remote machines, and execute it, feeding it the list of IP addresses
     pssh -I tee /tmp/clusterize.py <lib/clusterize.py
@@ -253,36 +265,30 @@ _cmd_docker() {
       sudo ln -sfn /mnt/docker /var/lib/docker
     fi
 
-    # containerd 1.6 breaks Weave.
-    # See https://github.com/containerd/containerd/issues/6921
-    sudo tee /etc/apt/preferences.d/containerd <<EOF
-Package: containerd.io
-Pin: version 1.5.*
-Pin-Priority: 1000
-EOF
-
     # This will install the latest Docker.
     sudo apt-get -qy install apt-transport-https ca-certificates curl software-properties-common
     curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -
-    sudo add-apt-repository 'deb https://download.docker.com/linux/ubuntu bionic stable'
+    sudo add-apt-repository 'deb https://download.docker.com/linux/ubuntu jammy stable'
     sudo apt-get -q update
     sudo apt-get -qy install docker-ce
 
     # Add registry mirror configuration.
     if ! [ -f /etc/docker/daemon.json ]; then
+        sudo mkdir -p /etc/docker
         echo '{\"registry-mirrors\": [\"https://mirror.gcr.io\"]}' | sudo tee /etc/docker/daemon.json
         sudo systemctl restart docker
     fi
     "
 
     ##VERSION## https://github.com/docker/compose/releases
-    if [ "$ARCHITECTURE" ]; then
-        COMPOSE_VERSION=v2.2.3
-        COMPOSE_PLATFORM='linux-$(uname -m)'
-    else
-        COMPOSE_VERSION=1.29.2
-        COMPOSE_PLATFORM='Linux-$(uname -m)'
-    fi
+    COMPOSE_VERSION=v2.11.1
+    COMPOSE_PLATFORM='linux-$(uname -m)'
+    
+    # Just in case you need Compose 1.X, you can use the following lines.
+    # (But it will probably only work for x86_64 machines.)
+    #COMPOSE_VERSION=1.29.2
+    #COMPOSE_PLATFORM='Linux-$(uname -m)'
+
     pssh "
     set -e
     ### Install docker-compose.
@@ -351,16 +357,21 @@ Pin-Priority: 1000
 EOF"
     fi
 
+    # As of February 27th, 2023, packages.cloud.google.com seems broken
+    # (serves HTTP 500 errors for the GPG key), so let's pre-load that key.
+    pssh -I "sudo apt-key add -" < lib/kubernetes-apt-key.gpg
+
     # Install packages
     pssh --timeout 200 "
-    curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg |
-    sudo apt-key add - &&
+    #curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg |
+    #sudo apt-key add - &&
     echo deb http://apt.kubernetes.io/ kubernetes-xenial main |
     sudo tee /etc/apt/sources.list.d/kubernetes.list"
     pssh --timeout 200 "
     sudo apt-get update -q &&
     sudo apt-get install -qy kubelet kubeadm kubectl &&
-    sudo apt-mark hold kubelet kubeadm kubectl
+    sudo apt-mark hold kubelet kubeadm kubectl &&
+    kubeadm completion bash | sudo tee /etc/bash_completion.d/kubeadm &&
     kubectl completion bash | sudo tee /etc/bash_completion.d/kubectl &&
     echo 'alias k=kubectl' | sudo tee /etc/bash_completion.d/k &&
     echo 'complete -F __start_kubectl k' | sudo tee -a /etc/bash_completion.d/k"
@@ -372,10 +383,12 @@ EOF"
         sudo swapoff -a"
     fi
 
-    # Re-enable CRI interface in containerd
-    pssh "
-    echo '# Use default parameters for containerd.' | sudo tee /etc/containerd/config.toml
-    sudo systemctl restart containerd"
+    # Install a valid configuration for containerd
+    # (first, the CRI interface needs to be re-enabled;
+    # also, the correct systemd cgroup driver must be selected,
+    # otherwise containerd just restarts containers for no good reason)
+    pssh -I "sudo tee /etc/containerd/config.toml" < lib/containerd-config.toml
+    pssh "sudo systemctl restart containerd"
 
     # Initialize kube control plane
     pssh --timeout 200 "
@@ -387,8 +400,6 @@ apiVersion: kubeadm.k8s.io/v1beta2
 bootstrapTokens:
 - token: \$(cat /tmp/token)
 nodeRegistration:
-  # Comment out the next line to switch back to Docker.
-  criSocket: /run/containerd/containerd.sock
   ignorePreflightErrors:
   - NumCPU
 ---
@@ -400,16 +411,12 @@ discovery:
     token: \$(cat /tmp/token)
     unsafeSkipCAVerification: true
 nodeRegistration:
-  # Comment out the next line to switch back to Docker.
-  criSocket: /run/containerd/containerd.sock
   ignorePreflightErrors:
   - NumCPU
 ---
 kind: KubeletConfiguration
 apiVersion: kubelet.config.k8s.io/v1beta1
-# The following line is necessary when using Docker.
-# It doesn't seem necessary when using containerd.
-#cgroupDriver: cgroupfs
+failSwapOn: false
 ---
 kind: ClusterConfiguration
 apiVersion: kubeadm.k8s.io/v1beta2
@@ -433,10 +440,17 @@ EOF
     # Install weave as the pod network
     pssh "
     if i_am_first_node; then
-        kubever=\$(kubectl version | base64 | tr -d '\n') &&
-        kubectl apply -f https://cloud.weave.works/k8s/net?k8s-version=\$kubever
+        kubectl apply -f https://github.com/weaveworks/weave/releases/download/v2.8.1/weave-daemonset-k8s-1.11.yaml
     fi"
 
+    # FIXME this is a gross hack to add the deployment key to our SSH agent,
+    # so that it can be used to bounce from host to host (which is necessary
+    # in the next deployment step). In the long run, we probably want to
+    # generate these keys locally and push them to the machines instead
+    # (once we move everything to Terraform).
+    if [ -f "tags/$TAG/id_rsa" ]; then
+        ssh-add tags/$TAG/id_rsa
+    fi
     # Join the other nodes to the cluster
     pssh --timeout 200 "
     if ! i_am_first_node && [ ! -f /etc/kubernetes/kubelet.conf ]; then
@@ -444,6 +458,9 @@ EOF
         ssh $SSHOPTS \$FIRSTNODE cat /tmp/kubeadm-config.yaml > /tmp/kubeadm-config.yaml &&
         sudo kubeadm join --config /tmp/kubeadm-config.yaml
     fi"
+    if [ -f "tags/$TAG/id_rsa" ]; then
+        ssh-add -d tags/$TAG/id_rsa
+    fi
 
     # Install metrics server
     pssh "
@@ -492,7 +509,7 @@ _cmd_kubetools() {
     # Install kube-ps1
     pssh "
     set -e
-    if ! [ -f /opt/kube-ps1 ]; then
+    if ! [ -d /opt/kube-ps1 ]; then
       cd /tmp
       git clone https://github.com/jonmosco/kube-ps1
       sudo mv kube-ps1 /opt/kube-ps1
@@ -509,13 +526,13 @@ EOF
 
     # Install stern
     ##VERSION## https://github.com/stern/stern/releases
-    STERN_VERSION=1.20.1
+    STERN_VERSION=1.22.0
     FILENAME=stern_${STERN_VERSION}_linux_${ARCH}
     URL=https://github.com/stern/stern/releases/download/v$STERN_VERSION/$FILENAME.tar.gz
     pssh "
     if [ ! -x /usr/local/bin/stern ]; then
         curl -fsSL $URL |
-        sudo tar -C /usr/local/bin -zx --strip-components=1 $FILENAME/stern
+        sudo tar -C /usr/local/bin -zx stern
         sudo chmod +x /usr/local/bin/stern
         stern --completion bash | sudo tee /etc/bash_completion.d/stern
         stern --version
@@ -531,7 +548,7 @@ EOF
 
     # Install kustomize
     ##VERSION## https://github.com/kubernetes-sigs/kustomize/releases
-    KUSTOMIZE_VERSION=v4.4.0
+    KUSTOMIZE_VERSION=v4.5.7
     URL=https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize/${KUSTOMIZE_VERSION}/kustomize_${KUSTOMIZE_VERSION}_linux_${ARCH}.tar.gz
     pssh "
     if [ ! -x /usr/local/bin/kustomize ]; then
@@ -550,7 +567,7 @@ EOF
     if [ ! -x /usr/local/bin/ship ]; then
         ##VERSION##
         curl -fsSL https://github.com/replicatedhq/ship/releases/download/v0.51.3/ship_0.51.3_linux_$ARCH.tar.gz |
-             sudo tar -C /usr/local/bin -zx ship
+            sudo tar -C /usr/local/bin -zx ship
     fi"
 
     # Install the AWS IAM authenticator
@@ -558,8 +575,8 @@ EOF
     if [ ! -x /usr/local/bin/aws-iam-authenticator ]; then
         ##VERSION##
         sudo curl -fsSLo /usr/local/bin/aws-iam-authenticator https://amazon-eks.s3-us-west-2.amazonaws.com/1.12.7/2019-03-27/bin/linux/$ARCH/aws-iam-authenticator
-	sudo chmod +x /usr/local/bin/aws-iam-authenticator
-    aws-iam-authenticator version
+	      sudo chmod +x /usr/local/bin/aws-iam-authenticator
+        aws-iam-authenticator version
     fi"
 
     # Install the krew package manager
@@ -576,7 +593,7 @@ EOF
     # Install k9s
     pssh "
     if [ ! -x /usr/local/bin/k9s ]; then
-        FILENAME=k9s_Linux_$HERP_DERP_ARCH.tar.gz &&
+        FILENAME=k9s_Linux_$ARCH.tar.gz &&
         curl -fsSL https://github.com/derailed/k9s/releases/latest/download/\$FILENAME |
         sudo tar -zxvf- -C /usr/local/bin k9s
         k9s version
@@ -601,6 +618,7 @@ EOF
         FILENAME=tilt.\$TILT_VERSION.linux.$TILT_ARCH.tar.gz
         curl -fsSL https://github.com/tilt-dev/tilt/releases/download/v\$TILT_VERSION/\$FILENAME |
         sudo tar -zxvf- -C /usr/local/bin tilt
+        tilt completion bash | sudo tee /etc/bash_completion.d/tilt
         tilt version
     fi"
 
@@ -609,6 +627,7 @@ EOF
     if [ ! -x /usr/local/bin/skaffold ]; then
         curl -fsSLo skaffold https://storage.googleapis.com/skaffold/releases/latest/skaffold-linux-$ARCH &&
         sudo install skaffold /usr/local/bin/
+        skaffold completion bash | sudo tee /etc/bash_completion.d/skaffold
         skaffold version
     fi"
 
@@ -617,7 +636,26 @@ EOF
     if [ ! -x /usr/local/bin/kompose ]; then
         curl -fsSLo kompose https://github.com/kubernetes/kompose/releases/latest/download/kompose-linux-$ARCH &&
         sudo install kompose /usr/local/bin
+        kompose completion bash | sudo tee /etc/bash_completion.d/kompose
         kompose version
+    fi"
+
+    # Install KinD
+    pssh "
+    if [ ! -x /usr/local/bin/kind ]; then
+        curl -fsSLo kind https://github.com/kubernetes-sigs/kind/releases/latest/download/kind-linux-$ARCH &&
+        sudo install kind /usr/local/bin
+        kind completion bash | sudo tee /etc/bash_completion.d/kind
+        kind version
+    fi"
+
+    # Install YTT
+    pssh "
+    if [ ! -x /usr/local/bin/ytt ]; then
+        curl -fsSLo ytt https://github.com/vmware-tanzu/carvel-ytt/releases/latest/download/ytt-linux-$ARCH &&
+        sudo install ytt /usr/local/bin
+        ytt completion bash | sudo tee /etc/bash_completion.d/ytt
+        ytt version
     fi"
 
     ##VERSION## https://github.com/bitnami-labs/sealed-secrets/releases
@@ -782,8 +820,6 @@ _cmd_tools() {
     sudo apt-get -qy install apache2-utils emacs-nox git httping htop jid joe jq mosh python-setuptools tree unzip
     # This is for VMs with broken PRNG (symptom: running docker-compose randomly hangs)
     sudo apt-get -qy install haveged
-    # I don't remember why we need to remove this
-    sudo apt-get remove -y --purge dnsmasq-base
     "
 }
 
@@ -1038,15 +1074,22 @@ _cmd_passwords() {
     info "Done."
 }
 
-_cmd wait "Wait until VMs are ready (reachable and cloud init is done)"
+_cmd wait "Wait until VMs are ready (reachable, cloud init is done, ubuntu user is up)"
 _cmd_wait() {
     TAG=$1
     need_tag
 
     # Wait until all hosts are reachable.
     info "Trying to reach $TAG instances..."
-    while ! pssh -t 5 true 2>&1 >/dev/null; do
-        >/dev/stderr echo -n "."
+    while >/dev/stderr echo -n "."; do
+        pssh -t 5 true 2>&1 >/dev/null && {
+            SSH_USER=ubuntu
+            break
+        }
+        pssh -l root -t 5 true 2>&1 >/dev/null && {
+            SSH_USER=root
+            break
+        }
         sleep 2
     done
     >/dev/stderr echo ""
@@ -1054,12 +1097,26 @@ _cmd_wait() {
     # If this VM image is using cloud-init,
     # wait for cloud-init to be done
     info "Waiting for cloud-init to be done on $TAG instances..."
-    pssh "
+    pssh -l $SSH_USER "
     if [ -d /var/lib/cloud ]; then
-        while [ ! -f /var/lib/cloud/instance/boot-finished ]; do
-            sleep 1
-        done
+        cloud-init status --wait
     fi"
+
+    if [ "$SSH_USER" = "root" ]; then
+        pssh -l root "
+        getent passwd ubuntu || {
+            useradd ubuntu -m -s /bin/bash
+            echo 'ubuntu ALL=(ALL:ALL) NOPASSWD:ALL' > /etc/sudoers.d/ubuntu
+        }
+        [ -d /home/ubuntu/.ssh ] ||
+            install --owner=ubuntu --mode=700 --directory /home/ubuntu/.ssh
+        [ -f /home/ubuntu/.ssh/authorized_keys ] ||
+            install --owner=ubuntu --mode=600 /root/.ssh/authorized_keys --target-directory /home/ubuntu/.ssh
+        "
+    fi
+
+    # Now make sure that we have an ubuntu user
+    pssh true
 }
 
 # Sometimes, weave fails to come up on some nodes.
@@ -1084,7 +1141,6 @@ _cmd_webssh() {
     need_tag
     pssh "
     sudo apt-get update &&
-    sudo apt-get install python-tornado python-paramiko -y ||
     sudo apt-get install python3-tornado python3-paramiko -y"
     pssh "
     cd /opt
