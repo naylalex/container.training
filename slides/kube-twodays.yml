@@ -27,6 +27,7 @@ content:
 - shared/toc.md
 -
   - shared/prereqs.md
+  - shared/handson.md
   #- shared/webssh.md
   - shared/connecting.md
   #- k8s/versions-k8s.md
@@ -67,7 +68,6 @@ content:
   - shared/hastyconclusions.md
   - k8s/daemonset.md
   - shared/yaml.md
-  - k8s/authoring-yaml.md
   #- k8s/exercise-yaml.md
 -
   - k8s/localkubeconfig.md
